@@ -18,7 +18,6 @@ package sign
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	_ "crypto/sha256" // for `crypto.SHA256`
@@ -387,7 +386,6 @@ func SignerFromKeyOpts(ctx context.Context, certPath string, ko KeyOpts) (*CertS
 		return certSigner, nil
 	}
 	// Default Keyless!
-	fmt.Fprintln(os.Stderr, "Generating ephemeral keys...")
 	fulcioServer, err := url.Parse(ko.FulcioURL)
 	if err != nil {
 		return nil, errors.Wrap(err, "parsing Fulcio URL")
@@ -402,16 +400,6 @@ func SignerFromKeyOpts(ctx context.Context, certPath string, ko KeyOpts) (*CertS
 	}
 
 	var k *fulcio.Signer
-	if internalSigner == nil {
-		priv, err := cosign.GeneratePrivateKey()
-		if err != nil {
-			return nil, errors.Wrap(err, "generating cert")
-		}
-		internalSigner, err = signature.LoadECDSASignerVerifier(priv, crypto.SHA256)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	if ko.InsecureSkipFulcioVerify {
 		k, err = fulcio.NewSigner(ctx, tok, ko.OIDCIssuer, ko.OIDCClientID, fClient, internalSigner)

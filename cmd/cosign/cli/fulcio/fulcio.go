@@ -33,6 +33,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio/fulcioroots"
+	"github.com/sigstore/cosign/pkg/cosign"
 	fulcioClient "github.com/sigstore/fulcio/pkg/generated/client"
 	"github.com/sigstore/fulcio/pkg/generated/client/operations"
 	"github.com/sigstore/fulcio/pkg/generated/models"
@@ -170,6 +171,18 @@ type Signer struct {
 }
 
 func NewSigner(ctx context.Context, idToken, oidcIssuer, oidcClientID string, fClient *fulcioClient.Fulcio, internalSigner signature.SignerVerifier) (*Signer, error) {
+	if internalSigner == nil {
+		fmt.Fprintln(os.Stderr, "Generating ephemeral keys...")
+		priv, err := cosign.GeneratePrivateKey()
+		if err != nil {
+			return nil, errors.Wrap(err, "generating cert")
+		}
+		internalSigner, err = signature.LoadECDSASignerVerifier(priv, crypto.SHA256)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	public, err := internalSigner.PublicKey()
 	if err != nil {
 		return nil, errors.Wrap(err, "reading public")
