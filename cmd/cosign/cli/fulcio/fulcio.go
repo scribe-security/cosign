@@ -16,11 +16,10 @@
 package fulcio
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -34,7 +33,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio/fulcioroots"
-	"github.com/sigstore/cosign/pkg/cosign"
 	fulcioClient "github.com/sigstore/fulcio/pkg/generated/client"
 	"github.com/sigstore/fulcio/pkg/generated/client/operations"
 	"github.com/sigstore/fulcio/pkg/generated/models"
@@ -70,8 +68,30 @@ type signingCertProvider interface {
 	SigningCert(params *operations.SigningCertParams, authInfo runtime.ClientAuthInfoWriter, opts ...operations.ClientOption) (*operations.SigningCertCreated, error)
 }
 
-func getCertForOauthID(priv *ecdsa.PrivateKey, scp signingCertProvider, connector oidcConnector, oidcIssuer string, oidcClientID string) (Resp, error) {
-	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+func getPublicBytes(public crypto.PublicKey) ([]byte, error) {
+	var pubBytes []byte
+	var err error
+	switch public.(type) {
+	case *ecdsa.PublicKey:
+		ecdsaPub := public.(*ecdsa.PublicKey)
+		pubBytes, err = x509.MarshalPKIXPublicKey(ecdsaPub)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("Unsupported key type")
+	}
+
+	return pubBytes, nil
+}
+
+func getCertForOauthID(internalSigner signature.SignerVerifier, scp signingCertProvider, connector oidcConnector, oidcIssuer string, oidcClientID string) (Resp, error) {
+	public, err := internalSigner.PublicKey()
+	if err != nil {
+		return Resp{}, errors.New("reading public")
+	}
+
+	pubBytes, err := getPublicBytes(public)
 	if err != nil {
 		return Resp{}, err
 	}
@@ -82,8 +102,7 @@ func getCertForOauthID(priv *ecdsa.PrivateKey, scp signingCertProvider, connecto
 	}
 
 	// Sign the email address as part of the request
-	h := sha256.Sum256([]byte(tok.Subject))
-	proof, err := ecdsa.SignASN1(rand.Reader, priv, h[:])
+	proof, err := internalSigner.SignMessage(bytes.NewReader([]byte(tok.Subject)))
 	if err != nil {
 		return Resp{}, err
 	}
@@ -125,7 +144,7 @@ func getCertForOauthID(priv *ecdsa.PrivateKey, scp signingCertProvider, connecto
 }
 
 // GetCert returns the PEM-encoded signature of the OIDC identity returned as part of an interactive oauth2 flow plus the PEM-encoded cert chain.
-func GetCert(ctx context.Context, priv *ecdsa.PrivateKey, idToken, flow, oidcIssuer, oidcClientID string, fClient *fulcioClient.Fulcio) (Resp, error) {
+func GetCert(ctx context.Context, internalSigner signature.SignerVerifier, idToken, flow, oidcIssuer, oidcClientID string, fClient *fulcioClient.Fulcio) (Resp, error) {
 	c := &realConnector{}
 	switch flow {
 	case FlowDevice:
@@ -139,26 +158,23 @@ func GetCert(ctx context.Context, priv *ecdsa.PrivateKey, idToken, flow, oidcIss
 		return Resp{}, fmt.Errorf("unsupported oauth flow: %s", flow)
 	}
 
-	return getCertForOauthID(priv, fClient.Operations, c, oidcIssuer, oidcClientID)
+	return getCertForOauthID(internalSigner, fClient.Operations, c, oidcIssuer, oidcClientID)
 }
 
 type Signer struct {
 	Cert  []byte
 	Chain []byte
 	SCT   []byte
-	pub   *ecdsa.PublicKey
-	*signature.ECDSASignerVerifier
+	pub   crypto.PublicKey
+	signature.SignerVerifier
 }
 
-func NewSigner(ctx context.Context, idToken, oidcIssuer, oidcClientID string, fClient *fulcioClient.Fulcio) (*Signer, error) {
-	priv, err := cosign.GeneratePrivateKey()
+func NewSigner(ctx context.Context, idToken, oidcIssuer, oidcClientID string, fClient *fulcioClient.Fulcio, internalSigner signature.SignerVerifier) (*Signer, error) {
+	public, err := internalSigner.PublicKey()
 	if err != nil {
-		return nil, errors.Wrap(err, "generating cert")
+		return nil, errors.Wrap(err, "reading public")
 	}
-	signer, err := signature.LoadECDSASignerVerifier(priv, crypto.SHA256)
-	if err != nil {
-		return nil, err
-	}
+
 	fmt.Fprintln(os.Stderr, "Retrieving signed certificate...")
 
 	var flow string
@@ -171,17 +187,17 @@ func NewSigner(ctx context.Context, idToken, oidcIssuer, oidcClientID string, fC
 	default:
 		flow = FlowNormal
 	}
-	Resp, err := GetCert(ctx, priv, idToken, flow, oidcIssuer, oidcClientID, fClient) // TODO, use the chain.
+	Resp, err := GetCert(ctx, internalSigner, idToken, flow, oidcIssuer, oidcClientID, fClient) // TODO, use the chain.
 	if err != nil {
 		return nil, errors.Wrap(err, "retrieving cert")
 	}
 
 	f := &Signer{
-		pub:                 &priv.PublicKey,
-		ECDSASignerVerifier: signer,
-		Cert:                Resp.CertPEM,
-		Chain:               Resp.ChainPEM,
-		SCT:                 Resp.SCT,
+		pub:            &public,
+		SignerVerifier: internalSigner,
+		Cert:           Resp.CertPEM,
+		Chain:          Resp.ChainPEM,
+		SCT:            Resp.SCT,
 	}
 
 	return f, nil

@@ -62,6 +62,9 @@ func Sign() *cobra.Command {
   # sign a container image with a key pair stored in a Kubernetes secret
   cosign sign --key k8s://[NAMESPACE]/[KEY] <IMAGE>
 
+  # sign a container image with Google sign-in (experimental) with a key pair stored in AWS KMS
+  COSIGN_EXPERIMENTAL=1 cosign sign --key awskms://[ENDPOINT]/[ID/ALIAS/ARN] <IMAGE>
+
   # sign a container in a registry which does not fully support OCI media types
   COSIGN_DOCKER_MEDIA_TYPES=1 cosign sign --key cosign.key legacy-registry.example.com/my/image`,
 		Args: cobra.MinimumNArgs(1),

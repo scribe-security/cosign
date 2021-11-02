@@ -28,6 +28,9 @@ cosign sign-blob [flags]
 
   # sign a blob with a key pair stored in Hashicorp Vault
   cosign sign-blob --key hashivault://[KEY] <FILE>
+
+  # sign a container image with Google sign-in (experimental) with a key pair stored in AWS KMS
+  COSIGN_EXPERIMENTAL=1 cosign sign-blob --key awskms://[ENDPOINT]/[ID/ALIAS/ARN] <IMAGE>
 ```
 
 ### Options

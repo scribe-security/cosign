@@ -18,6 +18,7 @@ package sign
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	_ "crypto/sha256" // for `crypto.SHA256`
@@ -293,6 +294,8 @@ func Bundle(entry *models.LogEntryAnon) *oci.Bundle {
 }
 
 func SignerFromKeyOpts(ctx context.Context, certPath string, ko KeyOpts) (*CertSignVerifier, error) {
+	var internalSigner signature.SignerVerifier
+
 	switch {
 	case ko.Sk:
 		sk, err := pivkey.GetKeyWithSlot(ko.Slot)
@@ -329,6 +332,11 @@ func SignerFromKeyOpts(ctx context.Context, certPath string, ko KeyOpts) (*CertS
 		k, err := sigs.SignerVerifierFromKeyRef(ctx, ko.KeyRef, ko.PassFunc)
 		if err != nil {
 			return nil, errors.Wrap(err, "reading key")
+		}
+
+		if options.EnableExperimental() {
+			internalSigner = k
+			break
 		}
 
 		certSigner := &CertSignVerifier{
@@ -394,14 +402,24 @@ func SignerFromKeyOpts(ctx context.Context, certPath string, ko KeyOpts) (*CertS
 	}
 
 	var k *fulcio.Signer
+	if internalSigner == nil {
+		priv, err := cosign.GeneratePrivateKey()
+		if err != nil {
+			return nil, errors.Wrap(err, "generating cert")
+		}
+		internalSigner, err = signature.LoadECDSASignerVerifier(priv, crypto.SHA256)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	if ko.InsecureSkipFulcioVerify {
-		k, err = fulcio.NewSigner(ctx, tok, ko.OIDCIssuer, ko.OIDCClientID, fClient)
+		k, err = fulcio.NewSigner(ctx, tok, ko.OIDCIssuer, ko.OIDCClientID, fClient, internalSigner)
 		if err != nil {
 			return nil, errors.Wrap(err, "getting key from Fulcio")
 		}
 	} else {
-		k, err = fulcioverifier.NewSigner(ctx, tok, ko.OIDCIssuer, ko.OIDCClientID, fClient)
+		k, err = fulcioverifier.NewSigner(ctx, tok, ko.OIDCIssuer, ko.OIDCClientID, fClient, internalSigner)
 		if err != nil {
 			return nil, errors.Wrap(err, "getting key from Fulcio")
 		}
